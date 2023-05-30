@@ -5,8 +5,17 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Transactions;
 
-class Program
+public class Peer
 {
+    private ITcpClient _tcpClient;
+    private ITcpListener _listener;
+    private IConsole _console;
+    public Peer(ITcpClient remoteClient, ITcpListener listener, IConsole console)
+    {
+        _console = console;
+        _tcpClient = remoteClient;
+        _listener = listener;
+    }
     static void Main()
     {
         Console.WriteLine("Enter your port:");
@@ -25,49 +34,43 @@ class Program
         }
         int targetPort = int.Parse(input);
 
-        Task task = Task.Run(() => StartPeer("Peer1", IPAddress.Parse("127.0.0.1"), port, "127.0.0.1", targetPort));
-
-        task.Wait();
-    }
-
-    static async Task StartPeer(string name, IPAddress ipAddress, int port, string remoteIpAddress, int remotePort)
-    {
-        TcpListener listener = new TcpListener(ipAddress, port);
+        IConsole console = new ConsoleWrapper();
+        TcpListener listener = new TcpListener(IPAddress.Parse("127.0.0.1"), port);
         listener.Start();
-        Console.WriteLine($"{name} listening on {ipAddress}:{port}");
-
         while (true)
         {
-            try
-            {
-                TcpClient remoteClient = new TcpClient(remoteIpAddress, remotePort);
-                Console.WriteLine($"{name} connected to {remoteIpAddress}:{remotePort}");
+            try {
+                TcpClient client = new TcpClient("127.0.0.1", targetPort);
 
-                Task.Run(() => ProcessIncomingMessages(listener));
-                await ProcessOutgoingMessages(remoteClient);
+                Peer peer = new Peer(new TcpClientWrapper(client), new TcpListenerWrapper(listener), console);
+                Task.Run(() => peer.StartPeer()).Wait();
                 break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Could not connect");
-                await Task.Delay(1000);
+                Console.WriteLine("Could not connect: " + ex.Message);
+                Task.Delay(1000).Wait();
                 continue;
             }
         }
     }
 
-    static async Task ProcessIncomingMessages(TcpListener listener)
-    {
-        while (true)
-        {
-            TcpClient client = await listener.AcceptTcpClientAsync();
-            Console.WriteLine($"Received connection from {(client.Client.RemoteEndPoint as IPEndPoint).Address}");
 
-            _ = HandleClientCommunicationAsync(client);
-        }
+    public async Task StartPeer()
+    {
+        Task.Run(() => ProcessIncomingMessages());
+        await ProcessOutgoingMessages();
     }
 
-    static async Task HandleClientCommunicationAsync(TcpClient client)
+    public async Task ProcessIncomingMessages()
+    {
+        ITcpClient client = await _listener.AcceptTcpClientAsync();
+        _console.WriteLine($"Received connection from {client.GetAddress()}");
+
+        _ = HandleClientCommunicationAsync(client);
+    }
+
+    private async Task HandleClientCommunicationAsync(ITcpClient client)
     {
         using (StreamReader reader = new StreamReader(client.GetStream()))
         using (StreamWriter writer = new StreamWriter(client.GetStream()))
@@ -75,35 +78,112 @@ class Program
             string? message;
             while ((message = await reader.ReadLineAsync()) != null)
             {
-                Console.WriteLine($"Received message: {message}");
+                _console.WriteLine($"Received message: {message}");
 
                 string response = $"Processed message: {message}";
                 await writer.WriteLineAsync(response);
                 await writer.FlushAsync();
 
-                Console.WriteLine($"Sent response: {response}");
+                _console.WriteLine($"Sent response: {response}");
             }
         }
 
-        client.Close();
+        _tcpClient.Close();
     }
 
-    static async Task ProcessOutgoingMessages(TcpClient client)
+    public async Task ProcessOutgoingMessages()
     {
-        using (StreamReader reader = new StreamReader(client.GetStream()))
-        using (StreamWriter writer = new StreamWriter(client.GetStream()))
+        using (StreamWriter writer = new StreamWriter(_tcpClient.GetStream()))
+        using (StreamReader reader = new StreamReader(_tcpClient.GetStream()))
         {
             while (true)
             {
-                Console.Write("Enter a message: ");
-                string? message = Console.ReadLine();
+                _console.WriteLine("Enter a message: ");
+                string? message = _console.ReadLine();
+                if (message == null || message == "")
+                {
+                    break;
+                }
 
                 await writer.WriteLineAsync(message);
                 await writer.FlushAsync();
-
                 string? response = await reader.ReadLineAsync();
-                Console.WriteLine($"Received response: {response}");
+                _console.WriteLine($"Received response: {response}");
             }
         }
     }
+}
+
+
+public class TcpListenerWrapper : ITcpListener
+{
+    private readonly TcpListener _listener;
+
+    public TcpListenerWrapper(TcpListener listener)
+    {
+        _listener = listener;
+    }
+
+    public async Task<ITcpClient> AcceptTcpClientAsync()
+    {
+        TcpClient client = await _listener.AcceptTcpClientAsync();
+
+        return new TcpClientWrapper(client);
+    }
+}
+
+public interface ITcpListener
+{
+    public Task<ITcpClient> AcceptTcpClientAsync();
+}
+
+public class TcpClientWrapper : ITcpClient
+{
+    private readonly TcpClient _client;
+
+    public TcpClientWrapper(TcpClient client)
+    {
+        _client = client;
+    }
+
+    public string GetAddress()
+    {
+        return (_client.Client.RemoteEndPoint as IPEndPoint).Address.ToString();
+    }
+
+    public void Close()
+    {
+        _client.Close();
+    }
+
+    public Stream GetStream()
+    {
+        return _client.GetStream();
+    }
+}
+
+public interface ITcpClient
+{
+    public void Close();
+    public Stream GetStream();
+    public string GetAddress();
+}
+
+public class ConsoleWrapper: IConsole
+{
+    public string? ReadLine()
+    {
+        return Console.ReadLine();
+    }
+
+    public void WriteLine(string line)
+    {
+        Console.WriteLine(line);
+    }
+}
+
+public interface IConsole
+{
+    public string? ReadLine();
+    public void WriteLine(string value);
 }
